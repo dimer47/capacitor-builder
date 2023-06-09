@@ -69,8 +69,10 @@ async function main() {
 
   const new_config = { ...config };
 
-  if (increase_app_version)
-    new_config.version += version_type === "minor" ? 0.1 : 1;
+  if (increase_app_version) {
+	  const newVersion = Number(config.version) + (version_type === "minor" ? 0.1 : 1);
+	  new_config.version = Number(newVersion.toFixed(2));
+  }
 
   if (increase_build_version) new_config.build += 1;
 
