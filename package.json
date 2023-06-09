@@ -1,0 +1,23 @@
+{
+  "name": "capacitor-builder",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.mjs",
+  "bin": {
+    "capacitor-builder": "./bin/capacitor-builder"
+  },
+  "scripts": {
+    "start": "node index.mjs",
+    "pack": "npm pack"
+  },
+  "author": "Iachi Dimitri <iachi.dimitri@gmail.com>",
+  "license": "ISC",
+  "dependencies": {
+    "chalk": "^5.2.0",
+    "child_process": "^1.0.2",
+    "commander": "^10.0.1",
+    "fs": "^0.0.1-security",
+    "inquirer": "^9.2.7"
+  }
+}

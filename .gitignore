@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# npm
+*.log
+.pnp/
+.pnp.js
+
+# Optional npm cache directory
+.npm
+
+# dotenv environment variables file
+.env
+
+# PHPStorm
+.idea/
+*.iml
+/.idea/workspace.xml
+/.idea/tasks.xml
+/.idea/dictionaries/
+/.idea/php.xml
+/.idea/phpstan/
+/.idea/phpunit/
+/.idea/deployment.xml
