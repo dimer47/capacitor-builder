@@ -3,6 +3,7 @@ import chalk from "chalk";
 class Logger {
   log(message, exit) {
     console.log(message);
+    if (exit) process.exit(1);
   }
 
   error(message, exit = true) {

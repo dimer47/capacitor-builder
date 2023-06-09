@@ -6,8 +6,7 @@ class ConfigManager {
   }
 
   readConfig() {
-    const config = JSON.parse(fs.readFileSync(this.configPath, "utf-8"));
-    return config;
+    return JSON.parse(fs.readFileSync(this.configPath, "utf-8"));
   }
 
   writeConfig(config) {

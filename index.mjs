@@ -1,4 +1,3 @@
-import fs from "fs";
 import child_process from "child_process";
 import inquirer from "inquirer";
 import OptionsManager from "./tools/options.mjs";
