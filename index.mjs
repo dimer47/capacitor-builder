@@ -13,22 +13,22 @@ async function main() {
 
   if (!options.force) {
     const branch = child_process
-      .execSync("git rev-parse --abbrev-ref HEAD")
-      .toString()
-      .trim();
+        .execSync("git rev-parse --abbrev-ref HEAD")
+        .toString()
+        .trim();
     if (branch !== "main")
       logger.error(
-        "Please use main branch to generate build of application.",
-        true
+          "Please use main branch to generate build of application.",
+          true
       );
 
     if (
-      child_process.execSync("git status --porcelain").toString().trim()
-        .length > 0
+        child_process.execSync("git status --porcelain").toString().trim()
+            .length > 0
     )
       logger.warning(
-        "=> Please commit changes before running the app build.",
-        true
+          "=> Please commit changes before running the app build.",
+          true
       );
   }
 
@@ -45,32 +45,50 @@ async function main() {
   if (!OS) logger.error("Cannot find OS to use for generating the app.");
 
   const { increase_app_version, version_type, increase_build_version } =
-    await inquirer.prompt([
-      {
-        message: "Increase app version",
-        name: "increase_app_version",
-        type: "confirm",
-        default: true,
-      },
-      {
-        message: "Version type",
-        name: "version_type",
-        type: "list",
-        choices: ["minor", "major"],
-      },
-      {
-        message: "Increase build",
-        name: "increase_build_version",
-        type: "confirm",
-        default: true,
-      },
-    ]);
+      await inquirer.prompt([
+        {
+          message: "Increase app version",
+          name: "increase_app_version",
+          type: "confirm",
+          default: true,
+        },
+        {
+          message: "Version type",
+          name: "version_type",
+          type: "list",
+          choices: [
+            "patch",
+            "major",
+            "minor",
+          ],
+        },
+        {
+          message: "Increase build",
+          name: "increase_build_version",
+          type: "confirm",
+          default: true,
+        },
+      ]);
 
   const new_config = { ...config };
 
   if (increase_app_version) {
-	  const newVersion = Number(config.version) + (version_type === "minor" ? 0.1 : 1);
-	  new_config.version = Number(newVersion.toFixed(2));
+    let versionParts = (config.version+"").split('.');
+    versionParts[0] = versionParts[0] ? parseInt(versionParts[0]) : 0;
+    versionParts[1] = versionParts[1] ? parseInt(versionParts[1]) : 0;
+    versionParts[2] = versionParts[2] ? parseInt(versionParts[2]) : 0;
+
+    if(version_type === "minor") {
+      versionParts[1] = parseInt(versionParts[1]) + 1;
+      versionParts[2] = 0;
+    } else if(version_type === "major") {
+      versionParts[0] = parseInt(versionParts[0]) + 1;
+      versionParts[1] = 0;
+      versionParts[2] = 0;
+    } else if(version_type === "patch") {
+      versionParts[2] = parseInt(versionParts[2]) + 1;
+    }
+    new_config.version = versionParts.join('.');
   }
 
   if (increase_build_version) new_config.build += 1;
@@ -87,22 +105,22 @@ async function main() {
 
   logger.blue(">>> Updating version and build ...");
   logger.log(
-    child_process
-      .execSync(
-        `capacitor-set-version set:${osOptions[OS]} -v ${new_config.version} -b ${new_config.build}`
-      )
-      .toString()
+      child_process
+          .execSync(
+              `capacitor-set-version set:${osOptions[OS]} -v ${new_config.version} -b ${new_config.build}`
+          )
+          .toString()
   );
 
   logger.blue(">>> Run xCode or Android Studio ...");
   logger.log(
-    child_process.execSync(`npx cap open ${osOptions[OS]}`).toString()
+      child_process.execSync(`npx cap open ${osOptions[OS]}`).toString()
   );
 
   if (increase_app_version) {
     logger.blue(">>> Tag version in VCS");
     logger.log(
-      child_process.execSync(`git tag v${new_config.version}`).toString()
+        child_process.execSync(`git tag v${new_config.version}`).toString()
     );
   }
 
