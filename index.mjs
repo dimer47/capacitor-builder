@@ -3,6 +3,7 @@ import inquirer from "inquirer";
 import OptionsManager from "./tools/options.mjs";
 import Logger from "./tools/logger.mjs";
 import ConfigManager from "./tools/configs.mjs";
+import fs from "fs";
 
 async function main() {
   const optionsManager = new OptionsManager();
@@ -104,20 +105,26 @@ async function main() {
   logger.log(child_process.execSync("npx cap sync").toString());
 
   logger.blue(">>> Updating version and build ...");
-  logger.log(
-      child_process
-          .execSync(
-              `capacitor-set-version set:android -v ${config.version} -b ${config.build}`
-          )
-          .toString()
-  );
-  logger.log(
-      child_process
-          .execSync(
-              `capacitor-set-version set:ios -v ${config.version} -b ${config.build}`
-          )
-          .toString()
-  );
+
+  if (fs.existsSync("./android")) {
+    logger.log(
+        child_process
+            .execSync(
+                `capacitor-set-version set:android -v ${config.version} -b ${config.build}`
+            )
+            .toString()
+    );
+  }
+
+  if (fs.existsSync("./ios")) {
+    logger.log(
+        child_process
+            .execSync(
+                `capacitor-set-version set:ios -v ${config.version} -b ${config.build}`
+            )
+            .toString()
+    );
+  }
 
   logger.blue(">>> Run xCode or Android Studio ...");
   logger.log(
