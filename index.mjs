@@ -107,7 +107,14 @@ async function main() {
   logger.log(
       child_process
           .execSync(
-              `capacitor-set-version set:${osOptions[OS]} -v ${new_config.version} -b ${new_config.build}`
+              `capacitor-set-version set:android -v ${config.version} -b ${config.build}`
+          )
+          .toString()
+  );
+  logger.log(
+      child_process
+          .execSync(
+              `capacitor-set-version set:ios -v ${config.version} -b ${config.build}`
           )
           .toString()
   );
