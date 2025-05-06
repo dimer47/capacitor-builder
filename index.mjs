@@ -58,9 +58,9 @@ async function main() {
           name: "version_type",
           type: "list",
           choices: [
-            "patch",
-            "major",
-            "minor",
+            { name: "patch (0.0.1)", value: "patch", description: "Increment x.x.1" },
+            { name: "minor (0.1.0)", value: "minor", description: "Increment x.1.x" },
+            { name: "major (1.0.0)", value: "major", description: "Increment 1.x.x" },
           ],
         },
         {
