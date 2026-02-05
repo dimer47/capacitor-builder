@@ -17,20 +17,37 @@ async function main() {
         .execSync("git rev-parse --abbrev-ref HEAD")
         .toString()
         .trim();
-    if (branch !== "main")
-      logger.error(
-          "Please use main branch to generate build of application.",
-          true
-      );
 
-    if (
+    const hasUncommittedChanges =
         child_process.execSync("git status --porcelain").toString().trim()
-            .length > 0
-    )
-      logger.warning(
-          "=> Please commit changes before running the app build.",
-          true
-      );
+            .length > 0;
+    const hasWrongBranch = branch !== "main";
+
+    if (hasWrongBranch || hasUncommittedChanges) {
+      if (hasWrongBranch)
+        logger.warning(
+            "Vous n'êtes pas sur la branche main.",
+            false
+        );
+
+      if (hasUncommittedChanges)
+        logger.warning(
+            "Des fichiers ne sont pas commités.",
+            false
+        );
+
+      const { continueBuild } = await inquirer.prompt([
+        {
+          message: "Vous n'êtes pas dans les conditions recommandées, mais voulez-vous continuer ?",
+          name: "continueBuild",
+          type: "confirm",
+          default: false,
+        },
+      ]);
+
+      if (!continueBuild)
+        logger.error("Build annulé.", true);
+    }
   }
 
   const configManager = new ConfigManager("./src/config.json");
