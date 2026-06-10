@@ -95,3 +95,12 @@ Le code source complet est dans :
 3. Build complet (`--ios` ou `--android`) → doit générer les deux (store + fichier)
 4. Relancer `--changelog-file` sur la même version → doit remplacer, pas dupliquer
 5. Nouvelle version → doit s'ajouter au-dessus de l'ancienne dans CHANGELOG.md
+
+---
+
+## Autre tâche : README bilingue
+
+Comme fait pour electron-release-builder :
+- Copier `readme.md` → `README.fr.md` (version française)
+- Convertir `readme.md` en anglais (version par défaut)
+- Ajouter un lien `> **[Lire en français](README.fr.md)**` en haut du README anglais
