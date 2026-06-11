@@ -1107,7 +1107,11 @@ async function main() {
   }
   if (platforms.includes("ios")) {
     exec("npx cap copy ios");
-    exec("cd ios/App && pod install");
+    if (fs.existsSync("ios/App/Podfile")) {
+      exec("cd ios/App && pod install");
+    } else {
+      logger.blue(">>> SPM project detected, skipping pod install");
+    }
   }
 
   // Update native versions
