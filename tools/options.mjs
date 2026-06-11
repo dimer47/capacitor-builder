@@ -10,11 +10,16 @@ class OptionsManager {
       "-f, --force",
       "Force generation of build even if not in main branch or not commit changes."
     );
+    this.program.option(
+      "-y, --yes",
+      "Non-interactive mode: accept all prompts automatically (for CI/CD and AI agents)."
+    );
     this.program.option("--ios", "Generate build for iOS.");
     this.program.option("--android", "Generate build for Android.");
     this.program.option("--both", "Generate build for both iOS and Android.");
     this.program.option("--no-upload", "Build without uploading to stores.");
     this.program.option("--changelog", "Generate changelog only (no build).");
+    this.program.option("--changelog-file", "Generate/update CHANGELOG.md (markdown format).");
     this.program.option("--tag", "Tag the current version (no build).");
     this.program.option("--init", "Create capacitor-builder.config.json interactively.");
     this.program.option("--check", "Validate capacitor-builder.config.json.");

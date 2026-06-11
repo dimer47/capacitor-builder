@@ -9,6 +9,29 @@ import crypto from "crypto";
 import https from "https";
 
 const logger = new Logger();
+const isNonInteractive = process.argv.includes("--yes") || process.argv.includes("-y");
+
+/**
+ * Wrapper around inquirer.prompt that respects --yes mode.
+ * In non-interactive mode, returns default values automatically.
+ */
+async function prompt(questions) {
+  if (!isNonInteractive) return inquirer.prompt(questions);
+
+  const result = {};
+  const qs = Array.isArray(questions) ? questions : [questions];
+  for (const q of qs) {
+    if (q.type === "confirm") {
+      result[q.name] = q.default !== undefined ? q.default : true;
+    } else if (q.type === "list") {
+      result[q.name] = q.default || (q.choices?.[0]?.value ?? q.choices?.[0]);
+    } else {
+      result[q.name] = q.default || "";
+    }
+    logger.log(`  [--yes] ${q.message} → ${result[q.name]}`);
+  }
+  return result;
+}
 
 // --- Helpers ---
 
@@ -407,6 +430,26 @@ ${commits}
 Réponds UNIQUEMENT avec le texte du changelog, rien d'autre.`;
 }
 
+function buildMarkdownChangelogPrompt(commits, language = "fr") {
+  return `Tu es un rédacteur de notes de version pour une application mobile.
+À partir de la liste de commits ci-dessous, génère un résumé clair et concis destiné aux utilisateurs finaux, au format markdown.
+
+Règles :
+- En ${language === "fr" ? "français" : language}
+- Résume les changements importants pour l'utilisateur (pas les détails techniques)
+- Regroupe les changements par thème avec des titres ### markdown
+- Utilise des bullet points courts et compréhensibles
+- Ne mentionne pas les hash de commits ni les noms de fichiers
+- Ignore les commits techniques (chore, refactor, merge) sauf s'ils apportent un bénéfice utilisateur visible
+- Maximum 10 bullet points
+- Formule du point de vue utilisateur (pas développeur)
+
+Commits :
+${commits}
+
+Génère uniquement le contenu markdown (sans le titre de version ##, je l'ajoute moi-même).`;
+}
+
 function httpsRequest(options, body = null) {
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
@@ -531,7 +574,7 @@ async function getChangelogFromUser(changelogConfig = {}) {
     logger.blue(`--- ${generated.length}/500 caractères ---`);
     logger.log("");
 
-    const { action } = await inquirer.prompt([{
+    const { action } = await prompt([{
       message: "Que faire avec ce changelog ?",
       name: "action",
       type: "list",
@@ -549,7 +592,7 @@ async function getChangelogFromUser(changelogConfig = {}) {
   }
 
   // Manual edit or no AI result
-  const { changelog } = await inquirer.prompt([{
+  const { changelog } = await prompt([{
     message: "Entrez le changelog (max 500 chars, vide pour passer):",
     name: "changelog",
     type: "editor",
@@ -557,6 +600,92 @@ async function getChangelogFromUser(changelogConfig = {}) {
 
   if (!changelog || !changelog.trim()) return null;
   return changelog.trim().substring(0, 500);
+}
+
+// --- CHANGELOG.md file generation ---
+
+async function generateMarkdownChangelog(changelogConfig = {}) {
+  const provider = changelogConfig.provider || "none";
+  const apiKey = changelogConfig.apiKey || "";
+  const language = changelogConfig.language || "fr";
+
+  if (provider === "none") return null;
+
+  const commits = getCommitsSinceLastTag();
+  if (!commits) {
+    logger.warning("Aucun commit trouvé depuis le dernier tag.", false);
+    return null;
+  }
+
+  const prompt = buildMarkdownChangelogPrompt(commits, language);
+
+  try {
+    let result;
+    if (provider === "claude-api") {
+      if (!apiKey) { logger.warning("Clé API Anthropic manquante", false); return null; }
+      result = await callClaudeAPI(prompt, apiKey);
+    } else if (provider === "gemini-api") {
+      if (!apiKey) { logger.warning("Clé API Gemini manquante", false); return null; }
+      result = await callGeminiAPI(prompt, apiKey);
+    } else if (provider === "claude-cli") {
+      result = callCLI(prompt, "claude-cli");
+    } else if (provider === "codex-cli") {
+      result = callCLI(prompt, "codex-cli");
+    } else {
+      logger.warning(`Provider inconnu: ${provider}`, false);
+      return null;
+    }
+    return result ? result.trim() : null;
+  } catch (e) {
+    logger.warning(`Erreur changelog markdown (${provider}): ${e.message}`, false);
+    return null;
+  }
+}
+
+async function writeChangelogFile(version, changelogConfig = {}) {
+  logger.blue(">>> Génération du CHANGELOG.md...");
+
+  const date = new Date().toISOString().split("T")[0];
+  let markdownContent = null;
+
+  if (changelogConfig.provider && changelogConfig.provider !== "none") {
+    markdownContent = await generateMarkdownChangelog(changelogConfig);
+  }
+
+  if (!markdownContent) {
+    // Fallback: liste brute des commits
+    const commits = getCommitsSinceLastTag();
+    if (commits) {
+      markdownContent = commits.split("\n").filter(Boolean).map(line => {
+        const match = line.match(/^[a-f0-9]+\s+(.+)$/);
+        return match ? `- ${match[1]}` : `- ${line}`;
+      }).join("\n");
+    } else {
+      markdownContent = "- Mise à jour mineure";
+    }
+  }
+
+  const versionHeader = `## v${version} (${date})`;
+  const newSection = `${versionHeader}\n\n${markdownContent}\n\n`;
+
+  const changelogPath = path.resolve(process.cwd(), "CHANGELOG.md");
+  let existingContent = "";
+
+  if (fs.existsSync(changelogPath)) {
+    existingContent = fs.readFileSync(changelogPath, "utf-8");
+    existingContent = existingContent.replace(/^# Changelog\n\n/, "");
+  }
+
+  // Si la version existe déjà, remplacer la section
+  const versionEscaped = version.replace(/\./g, "\\.");
+  if (existingContent.includes(`## v${version}`)) {
+    const regex = new RegExp(`## v${versionEscaped}[\\s\\S]*?(?=## v|$)`);
+    existingContent = existingContent.replace(regex, "");
+  }
+
+  const fullChangelog = `# Changelog\n\n${newSection}${existingContent}`;
+  fs.writeFileSync(changelogPath, fullChangelog);
+  logger.success(`✓ CHANGELOG.md mis à jour (v${version})`);
 }
 
 // --- Android: signing.properties ---
@@ -840,7 +969,7 @@ async function handleTagWorkflow(version, initialCommit) {
 
   // If config.json has uncommitted changes, propose to commit
   if (configChanged) {
-    const { doCommit } = await inquirer.prompt([{
+    const { doCommit } = await prompt([{
       message: `src/config.json a été modifié (v${version}). Créer un commit de version ?`,
       name: "doCommit",
       type: "confirm",
@@ -849,13 +978,16 @@ async function handleTagWorkflow(version, initialCommit) {
 
     if (doCommit) {
       exec(`git add src/config.json`);
+      if (fs.existsSync("CHANGELOG.md")) {
+        exec(`git add CHANGELOG.md`);
+      }
       exec(`git commit -m "chore: bump version to ${version}"`);
       logger.success(`  Commit de version créé`);
     }
   }
 
   // Propose to tag
-  const { doTag } = await inquirer.prompt([{
+  const { doTag } = await prompt([{
     message: `Tagger ce commit avec v${version} ?`,
     name: "doTag",
     type: "confirm",
@@ -886,7 +1018,7 @@ async function handleTagOnly() {
     execOutput(`git rev-parse v${version} 2>/dev/null`);
     logger.warning(`Le tag v${version} existe déjà.`, false);
 
-    const { retag } = await inquirer.prompt([{
+    const { retag } = await prompt([{
       message: `Voulez-vous déplacer le tag v${version} sur le commit actuel ?`,
       name: "retag",
       type: "confirm",
@@ -903,7 +1035,7 @@ async function handleTagOnly() {
     // Tag doesn't exist, create it
   }
 
-  const { doTag } = await inquirer.prompt([{
+  const { doTag } = await prompt([{
     message: `Créer le tag v${version} sur le commit actuel ?`,
     name: "doTag",
     type: "confirm",
@@ -1010,6 +1142,15 @@ async function main() {
     return;
   }
 
+  // Changelog-file-only mode
+  if (process.argv.includes("--changelog-file")) {
+    const changelogConfig = builderConfig?.changelog || {};
+    const configManager = new ConfigManager();
+    const config = configManager.readConfig();
+    await writeChangelogFile(config.version, changelogConfig);
+    return;
+  }
+
   // Determine platforms
   const hasIOS = process.argv.includes("--ios");
   const hasAndroid = process.argv.includes("--android");
@@ -1043,13 +1184,17 @@ async function main() {
       if (hasWrongBranch) logger.warning("Vous n'êtes pas sur la branche main.", false);
       if (hasUncommittedChanges) logger.warning("Des fichiers ne sont pas commités.", false);
 
-      const { continueBuild } = await inquirer.prompt([{
-        message: "Vous n'êtes pas dans les conditions recommandées, mais voulez-vous continuer ?",
-        name: "continueBuild",
-        type: "confirm",
-        default: false,
-      }]);
-      if (!continueBuild) logger.error("Build annulé.", true);
+      if (isNonInteractive) {
+        logger.log("  [--yes] Poursuite automatique malgré les avertissements");
+      } else {
+        const { continueBuild } = await prompt([{
+          message: "Vous n'êtes pas dans les conditions recommandées, mais voulez-vous continuer ?",
+          name: "continueBuild",
+          type: "confirm",
+          default: false,
+        }]);
+        if (!continueBuild) logger.error("Build annulé.", true);
+      }
     }
   }
 
@@ -1057,7 +1202,7 @@ async function main() {
   const configManager = new ConfigManager("./src/config.json");
   const config = configManager.readConfig();
 
-  const { increase_app_version, version_type, increase_build_version } = await inquirer.prompt([
+  const { increase_app_version, version_type, increase_build_version } = await prompt([
     { message: "Increase app version", name: "increase_app_version", type: "confirm", default: true },
     {
       message: "Version type", name: "version_type", type: "list",
@@ -1157,6 +1302,12 @@ async function main() {
       logger.blue(">>> Ouverture d'Android Studio...");
       exec("npx cap open android");
     }
+  }
+
+  // Generate CHANGELOG.md (markdown format)
+  const changelogFileConfig = builderConfig?.changelog || {};
+  if (changelogFileConfig.provider && changelogFileConfig.provider !== "none") {
+    await writeChangelogFile(new_config.version, changelogFileConfig);
   }
 
   // Git: commit version + tag workflow
