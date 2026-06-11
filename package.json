@@ -1,8 +1,8 @@
 {
   "name": "capacitor-builder",
   "type": "module",
-  "version": "1.0.1",
-  "description": "",
+  "version": "2.0.0",
+  "description": "Build & deploy Capacitor apps to iOS App Store and Google Play Store",
   "main": "index.mjs",
   "bin": {
     "capacitor-builder": "./bin/capacitor-builder"

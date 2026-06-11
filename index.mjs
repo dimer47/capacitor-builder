@@ -14,6 +14,7 @@ const isNonInteractive = process.argv.includes("--yes") || process.argv.includes
 /**
  * Wrapper around inquirer.prompt that respects --yes mode.
  * In non-interactive mode, returns default values automatically.
+ * Supports `when` conditions like inquirer does.
  */
 async function prompt(questions) {
   if (!isNonInteractive) return inquirer.prompt(questions);
@@ -21,6 +22,11 @@ async function prompt(questions) {
   const result = {};
   const qs = Array.isArray(questions) ? questions : [questions];
   for (const q of qs) {
+    // Evaluate `when` condition
+    if (q.when !== undefined) {
+      const shouldAsk = typeof q.when === "function" ? q.when(result) : q.when;
+      if (!shouldAsk) continue;
+    }
     if (q.type === "confirm") {
       result[q.name] = q.default !== undefined ? q.default : true;
     } else if (q.type === "list") {
@@ -49,6 +55,70 @@ function loadBuilderConfig() {
   return JSON.parse(fs.readFileSync(configPath, "utf-8"));
 }
 
+/**
+ * Unified HTTPS request helper.
+ */
+function httpsRequest(options, body = null) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const data = Buffer.concat(chunks).toString();
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(data)); } catch { resolve(data); }
+        } else {
+          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+        }
+      });
+    });
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function httpsUpload(options, fileBuffer) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const data = Buffer.concat(chunks).toString();
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(data)); } catch { resolve(data); }
+        } else {
+          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+        }
+      });
+    });
+    req.on("error", reject);
+    req.write(fileBuffer);
+    req.end();
+  });
+}
+
+/**
+ * Detect if the iOS project uses SPM (xcodeproj) or CocoaPods (xcworkspace).
+ * Returns { type: "spm" | "cocoapods", path: string } or null.
+ */
+function detectIOSProjectType(iosConfig = {}) {
+  if (iosConfig.project && fs.existsSync(iosConfig.project)) {
+    return { type: "spm", path: iosConfig.project };
+  }
+  if (iosConfig.workspace && fs.existsSync(iosConfig.workspace)) {
+    return { type: "cocoapods", path: iosConfig.workspace };
+  }
+  // Auto-detect
+  if (fs.existsSync("ios/App/App.xcworkspace")) {
+    return { type: "cocoapods", path: "ios/App/App.xcworkspace" };
+  }
+  if (fs.existsSync("ios/App/App.xcodeproj")) {
+    return { type: "spm", path: "ios/App/App.xcodeproj" };
+  }
+  return null;
+}
+
 // --- Help ---
 
 function showHelp() {
@@ -61,12 +131,14 @@ Commandes :
   --android            Build pour Android
   --both               Build pour iOS et Android
   --no-upload          Build sans upload sur les stores
-  --changelog          Générer le changelog seul (sans build)
+  --changelog          Générer le changelog store (texte brut, 500 chars max)
+  --changelog-file     Générer/mettre à jour CHANGELOG.md (format markdown)
   --tag                Tagger le dernier commit avec la version actuelle
   --check              Vérifier la config capacitor-builder.config.json
   --commit             Committer le bump de version + tagger (si oublié après generate)
   --help               Afficher cette aide
   -f, --force          Ignorer les vérifications git (branche, uncommitted)
+  -y, --yes            Mode non-interactif : accepte tous les prompts (pour CI/CD et agents IA)
 
 Scripts npm :
   npm run cb:generate                  Build + upload iOS & Android
@@ -75,7 +147,8 @@ Scripts npm :
   npm run ios:cb:generate:no-upload    Build iOS sans upload
   npm run android:cb:generate          Build + upload Android seul
   npm run android:cb:generate:no-upload Build Android sans upload
-  npm run cb:changelog                 Générer le changelog IA
+  npm run cb:changelog                 Générer le changelog IA (store)
+  npm run cb:changelog:file            Générer/mettre à jour CHANGELOG.md
   npm run cb:tag                       Tagger la version actuelle
   npm run cb:commit                    Committer version + tagger
   npm run cb:init                      Créer la config (interactif)
@@ -91,10 +164,13 @@ Démarrage :
 
 Configuration :
   capacitor-builder.config.json (gitignored) contient :
-  - ios: { teamId, scheme, workspace, apiKeyPath, apiKeyId, apiIssuerId }
-  - android: { packageName, keystorePath, keystorePassword, keyAlias, keyPassword, serviceAccountJsonPath }
+  - ios: { teamId, scheme, workspace|project, apiKeyPath, apiKeyId, apiIssuerId }
+  - android: { packageName, keystorePath, keystorePassword, keyAlias, keyPassword, serviceAccountJsonPath, track }
   - changelog: { provider, apiKey, language }
     providers: "claude-api" | "gemini-api" | "claude-cli" | "codex-cli" | "none"
+
+  iOS : utilisez "workspace" pour CocoaPods, "project" pour SPM.
+  Android : "track" peut être "internal" (défaut), "alpha", "beta", ou "production".
 `);
 }
 
@@ -127,10 +203,19 @@ async function handleInit() {
 
   let ios = null;
   if (configIOS) {
+    // Detect project type for default value
+    const detected = detectIOSProjectType();
+    const isSPM = detected?.type === "spm";
+
     const iosAnswers = await inquirer.prompt([
       { message: "Team ID Apple Developer:", name: "teamId", type: "input" },
       { message: "Scheme Xcode:", name: "scheme", type: "input", default: "App" },
-      { message: "Chemin workspace (.xcworkspace):", name: "workspace", type: "input", default: "ios/App/App.xcworkspace" },
+      {
+        message: isSPM ? "Chemin projet (.xcodeproj):" : "Chemin workspace (.xcworkspace):",
+        name: isSPM ? "project" : "workspace",
+        type: "input",
+        default: detected?.path || "ios/App/App.xcworkspace",
+      },
       { message: "Chemin clé API App Store Connect (.p8):", name: "apiKeyPath", type: "input" },
       { message: "API Key ID:", name: "apiKeyId", type: "input" },
       { message: "API Issuer ID:", name: "apiIssuerId", type: "input" },
@@ -155,6 +240,15 @@ async function handleInit() {
       { message: "Alias de la clé:", name: "keyAlias", type: "input", default: "key0" },
       { message: "Mot de passe de la clé:", name: "keyPassword", type: "password" },
       { message: "Chemin service account Google Play (.json):", name: "serviceAccountJsonPath", type: "input" },
+      {
+        message: "Canal Google Play:", name: "track", type: "list",
+        choices: [
+          { name: "internal (test interne)", value: "internal" },
+          { name: "alpha (test fermé)", value: "alpha" },
+          { name: "beta (test ouvert)", value: "beta" },
+          { name: "production", value: "production" },
+        ],
+      },
     ]);
     android = androidAnswers;
   }
@@ -212,7 +306,6 @@ async function handleInit() {
 function isGitignored() {
   const configFile = "capacitor-builder.config.json";
 
-  // Check via git if available
   try {
     execOutput(`git check-ignore -q ${configFile} 2>/dev/null`);
     return true;
@@ -220,7 +313,6 @@ function isGitignored() {
     // Not ignored
   }
 
-  // Fallback: check .gitignore content
   const gitignorePath = "./.gitignore";
   if (fs.existsSync(gitignorePath)) {
     const content = fs.readFileSync(gitignorePath, "utf-8");
@@ -254,8 +346,6 @@ function checkConfigSafety() {
     logger.warning("capacitor-builder.config.json n'est PAS dans le .gitignore !", false);
     logger.warning("  Ce fichier contient des mots de passe et clés API.", false);
     logger.log("");
-
-    // Auto-fix
     ensureGitignored();
   }
 }
@@ -270,7 +360,6 @@ function handleCheck() {
     return;
   }
 
-  // Parse JSON
   let config;
   try {
     config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
@@ -294,7 +383,7 @@ function handleCheck() {
   // Check iOS
   if (config.ios) {
     logger.blue("\n--- iOS ---");
-    const iosRequired = ["teamId", "scheme", "workspace", "apiKeyPath", "apiKeyId", "apiIssuerId"];
+    const iosRequired = ["teamId", "scheme", "apiKeyPath", "apiKeyId", "apiIssuerId"];
     for (const key of iosRequired) {
       if (!config.ios[key]) {
         logger.warning(`  ios.${key}: manquant`, false);
@@ -303,10 +392,19 @@ function handleCheck() {
         logger.success(`  ios.${key}: OK`);
       }
     }
-    // Check files exist
-    if (config.ios.workspace && !fs.existsSync(config.ios.workspace)) {
-      logger.warning(`  ios.workspace: fichier introuvable (${config.ios.workspace})`, false);
-      errors++;
+    // Check workspace OR project
+    if (!config.ios.workspace && !config.ios.project) {
+      logger.warning("  ios.workspace ou ios.project: manquant", false);
+      warnings++;
+    } else {
+      const iosProjectPath = config.ios.project || config.ios.workspace;
+      const iosProjectKey = config.ios.project ? "project" : "workspace";
+      if (fs.existsSync(iosProjectPath)) {
+        logger.success(`  ios.${iosProjectKey}: OK (${config.ios.project ? "SPM" : "CocoaPods"})`);
+      } else {
+        logger.warning(`  ios.${iosProjectKey}: fichier introuvable (${iosProjectPath})`, false);
+        errors++;
+      }
     }
     if (config.ios.apiKeyPath && !fs.existsSync(config.ios.apiKeyPath)) {
       logger.warning(`  ios.apiKeyPath: fichier introuvable (${config.ios.apiKeyPath})`, false);
@@ -326,12 +424,11 @@ function handleCheck() {
         logger.warning(`  android.${key}: manquant`, false);
         warnings++;
       } else {
-        // Mask passwords in output
         const isSecret = key.toLowerCase().includes("password");
         logger.success(`  android.${key}: ${isSecret ? "****" : "OK"}`);
       }
     }
-    // Check files exist
+    logger.log(`  android.track: ${config.android.track || "internal (défaut)"}`);
     if (config.android.keystorePath && !fs.existsSync(config.android.keystorePath)) {
       logger.warning(`  android.keystorePath: fichier introuvable (${config.android.keystorePath})`, false);
       errors++;
@@ -399,7 +496,6 @@ function getCommitsSinceLastTag() {
     const lastTag = execOutput("git describe --tags --abbrev=0 2>/dev/null");
     const commits = execOutput(`git log ${lastTag}..HEAD --oneline --no-decorate`);
     if (commits) return commits;
-    // HEAD is the tag itself — use previous tag
     const prevTag = execOutput(`git describe --tags --abbrev=0 ${lastTag}^ 2>/dev/null`);
     return execOutput(`git log ${prevTag}..${lastTag} --oneline --no-decorate`);
   } catch {
@@ -407,13 +503,36 @@ function getCommitsSinceLastTag() {
   }
 }
 
-function buildChangelogPrompt(commits, language = "fr") {
+function buildChangelogPrompt(commits, language = "fr", format = "store") {
+  const langName = language === "fr" ? "français" : language === "en" ? "anglais" : language === "es" ? "espagnol" : language === "pt" ? "portugais" : language === "pl" ? "polonais" : language;
+
+  if (format === "markdown") {
+    return `Tu es un rédacteur de notes de version pour une application mobile.
+À partir de la liste de commits ci-dessous, génère un résumé clair et concis destiné aux utilisateurs finaux, au format markdown.
+
+Règles :
+- En ${langName}
+- Résume les changements importants pour l'utilisateur (pas les détails techniques)
+- Regroupe les changements par thème avec des titres ### markdown
+- Utilise des bullet points courts et compréhensibles
+- Ne mentionne pas les hash de commits ni les noms de fichiers
+- Ignore les commits techniques (chore, refactor, merge) sauf s'ils apportent un bénéfice utilisateur visible
+- Maximum 10 bullet points
+- Formule du point de vue utilisateur (pas développeur)
+
+Commits :
+${commits}
+
+Génère uniquement le contenu markdown (sans le titre de version ##, je l'ajoute moi-même).`;
+  }
+
+  // Format store (texte brut, max 500 chars)
   return `Tu es un rédacteur de notes de version pour une application mobile.
 À partir de la liste de commits ci-dessous, génère un changelog concis et professionnel pour les utilisateurs.
 
 Règles strictes :
 - Maximum 500 caractères (limite Google Play Store)
-- En ${language === "fr" ? "français" : language}
+- En ${langName}
 - Pas de préfixe comme "Changelog:" ou "Notes de version:"
 - Pas de markdown (ni **, ni #, ni backticks, ni [lien])
 - Utilise des tirets - comme bullet points
@@ -430,50 +549,12 @@ ${commits}
 Réponds UNIQUEMENT avec le texte du changelog, rien d'autre.`;
 }
 
-function buildMarkdownChangelogPrompt(commits, language = "fr") {
-  return `Tu es un rédacteur de notes de version pour une application mobile.
-À partir de la liste de commits ci-dessous, génère un résumé clair et concis destiné aux utilisateurs finaux, au format markdown.
+// --- AI Providers ---
 
-Règles :
-- En ${language === "fr" ? "français" : language}
-- Résume les changements importants pour l'utilisateur (pas les détails techniques)
-- Regroupe les changements par thème avec des titres ### markdown
-- Utilise des bullet points courts et compréhensibles
-- Ne mentionne pas les hash de commits ni les noms de fichiers
-- Ignore les commits techniques (chore, refactor, merge) sauf s'ils apportent un bénéfice utilisateur visible
-- Maximum 10 bullet points
-- Formule du point de vue utilisateur (pas développeur)
-
-Commits :
-${commits}
-
-Génère uniquement le contenu markdown (sans le titre de version ##, je l'ajoute moi-même).`;
-}
-
-function httpsRequest(options, body = null) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
-        const data = Buffer.concat(chunks).toString();
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try { resolve(JSON.parse(data)); } catch { resolve(data); }
-        } else {
-          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
-        }
-      });
-    });
-    req.on("error", reject);
-    if (body) req.write(body);
-    req.end();
-  });
-}
-
-async function callClaudeAPI(prompt, apiKey) {
+async function callClaudeAPI(prompt, apiKey, maxTokens = 1024) {
   const body = JSON.stringify({
     model: "claude-sonnet-4-20250514",
-    max_tokens: 300,
+    max_tokens: maxTokens,
     messages: [{ role: "user", content: prompt }],
   });
   const result = await httpsRequest({
@@ -519,16 +600,20 @@ function callCLI(prompt, cli) {
   }
 }
 
-async function generateChangelog(changelogConfig = {}) {
+/**
+ * Unified changelog generation via AI provider.
+ * @param {object} changelogConfig - { provider, apiKey, language }
+ * @param {"store"|"markdown"} format - Output format
+ * @returns {string|null}
+ */
+async function generateChangelogWithAI(changelogConfig = {}, format = "store") {
   const provider = changelogConfig.provider || "none";
   const apiKey = changelogConfig.apiKey || "";
   const language = changelogConfig.language || "fr";
 
-  if (provider === "none") {
-    return null;
-  }
+  if (provider === "none") return null;
 
-  logger.blue(">>> Génération du changelog via IA...");
+  logger.blue(`>>> Génération du changelog ${format === "markdown" ? "(markdown)" : "(store)"} via IA...`);
 
   const commits = getCommitsSinceLastTag();
   if (!commits) {
@@ -536,28 +621,32 @@ async function generateChangelog(changelogConfig = {}) {
     return null;
   }
 
-  logger.log(`  Provider: ${provider}`);
-  logger.log(`  Commits depuis le dernier tag:\n${commits}\n`);
+  if (format === "store") {
+    logger.log(`  Provider: ${provider}`);
+    logger.log(`  Commits depuis le dernier tag:\n${commits}\n`);
+  }
 
-  const prompt = buildChangelogPrompt(commits, language);
+  const promptText = buildChangelogPrompt(commits, language, format);
+  const maxTokens = format === "markdown" ? 1024 : 300;
 
   try {
     let result;
     if (provider === "claude-api") {
       if (!apiKey) { logger.warning("Clé API Anthropic manquante dans changelog.apiKey", false); return null; }
-      result = await callClaudeAPI(prompt, apiKey);
+      result = await callClaudeAPI(promptText, apiKey, maxTokens);
     } else if (provider === "gemini-api") {
       if (!apiKey) { logger.warning("Clé API Gemini manquante dans changelog.apiKey", false); return null; }
-      result = await callGeminiAPI(prompt, apiKey);
+      result = await callGeminiAPI(promptText, apiKey);
     } else if (provider === "claude-cli") {
-      result = callCLI(prompt, "claude-cli");
+      result = callCLI(promptText, "claude-cli");
     } else if (provider === "codex-cli") {
-      result = callCLI(prompt, "codex-cli");
+      result = callCLI(promptText, "codex-cli");
     } else {
       logger.warning(`Provider inconnu: ${provider}`, false);
       return null;
     }
-    return result ? result.trim().substring(0, 500) : null;
+    const trimmed = result ? result.trim() : null;
+    return format === "store" && trimmed ? trimmed.substring(0, 500) : trimmed;
   } catch (e) {
     logger.warning(`Erreur changelog (${provider}): ${e.message}`, false);
     return null;
@@ -565,7 +654,7 @@ async function generateChangelog(changelogConfig = {}) {
 }
 
 async function getChangelogFromUser(changelogConfig = {}) {
-  const generated = await generateChangelog(changelogConfig);
+  const generated = await generateChangelogWithAI(changelogConfig, "store");
 
   if (generated) {
     logger.log("");
@@ -604,53 +693,11 @@ async function getChangelogFromUser(changelogConfig = {}) {
 
 // --- CHANGELOG.md file generation ---
 
-async function generateMarkdownChangelog(changelogConfig = {}) {
-  const provider = changelogConfig.provider || "none";
-  const apiKey = changelogConfig.apiKey || "";
-  const language = changelogConfig.language || "fr";
-
-  if (provider === "none") return null;
-
-  const commits = getCommitsSinceLastTag();
-  if (!commits) {
-    logger.warning("Aucun commit trouvé depuis le dernier tag.", false);
-    return null;
-  }
-
-  const prompt = buildMarkdownChangelogPrompt(commits, language);
-
-  try {
-    let result;
-    if (provider === "claude-api") {
-      if (!apiKey) { logger.warning("Clé API Anthropic manquante", false); return null; }
-      result = await callClaudeAPI(prompt, apiKey);
-    } else if (provider === "gemini-api") {
-      if (!apiKey) { logger.warning("Clé API Gemini manquante", false); return null; }
-      result = await callGeminiAPI(prompt, apiKey);
-    } else if (provider === "claude-cli") {
-      result = callCLI(prompt, "claude-cli");
-    } else if (provider === "codex-cli") {
-      result = callCLI(prompt, "codex-cli");
-    } else {
-      logger.warning(`Provider inconnu: ${provider}`, false);
-      return null;
-    }
-    return result ? result.trim() : null;
-  } catch (e) {
-    logger.warning(`Erreur changelog markdown (${provider}): ${e.message}`, false);
-    return null;
-  }
-}
-
 async function writeChangelogFile(version, changelogConfig = {}) {
   logger.blue(">>> Génération du CHANGELOG.md...");
 
   const date = new Date().toISOString().split("T")[0];
-  let markdownContent = null;
-
-  if (changelogConfig.provider && changelogConfig.provider !== "none") {
-    markdownContent = await generateMarkdownChangelog(changelogConfig);
-  }
+  let markdownContent = await generateChangelogWithAI(changelogConfig, "markdown");
 
   if (!markdownContent) {
     // Fallback: liste brute des commits
@@ -737,50 +784,10 @@ function generateJWT(serviceAccount) {
   return header + "." + payload + "." + sig;
 }
 
-function httpRequest(options, body = null) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
-        const data = Buffer.concat(chunks).toString();
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(JSON.parse(data));
-        } else {
-          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
-        }
-      });
-    });
-    req.on("error", reject);
-    if (body) req.write(body);
-    req.end();
-  });
-}
-
-function httpUpload(options, fileBuffer) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
-        const data = Buffer.concat(chunks).toString();
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(JSON.parse(data));
-        } else {
-          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
-        }
-      });
-    });
-    req.on("error", reject);
-    req.write(fileBuffer);
-    req.end();
-  });
-}
-
 async function getAccessToken(serviceAccount) {
   const jwt = generateJWT(serviceAccount);
   const postData = `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`;
-  const result = await httpRequest({
+  const result = await httpsRequest({
     hostname: "oauth2.googleapis.com",
     path: "/token",
     method: "POST",
@@ -795,10 +802,11 @@ async function uploadToGooglePlay(androidConfig, aabPath, changelog = null) {
   const serviceAccount = JSON.parse(fs.readFileSync(androidConfig.serviceAccountJsonPath, "utf-8"));
   const token = await getAccessToken(serviceAccount);
   const pkg = androidConfig.packageName;
+  const track = androidConfig.track || "internal";
 
   // 1. Create edit
   logger.log("  Création de l'edit...");
-  const edit = await httpRequest({
+  const edit = await httpsRequest({
     hostname: "androidpublisher.googleapis.com",
     path: `/androidpublisher/v3/applications/${pkg}/edits`,
     method: "POST",
@@ -808,7 +816,7 @@ async function uploadToGooglePlay(androidConfig, aabPath, changelog = null) {
   // 2. Upload AAB
   logger.log("  Upload de l'AAB...");
   const aabBuffer = fs.readFileSync(aabPath);
-  const uploadResult = await httpUpload({
+  const uploadResult = await httpsUpload({
     hostname: "androidpublisher.googleapis.com",
     path: `/upload/androidpublisher/v3/applications/${pkg}/edits/${edit.id}/bundles?uploadType=media`,
     method: "POST",
@@ -820,8 +828,8 @@ async function uploadToGooglePlay(androidConfig, aabPath, changelog = null) {
   }, aabBuffer);
   logger.log(`  AAB uploadé — versionCode: ${uploadResult.versionCode}`);
 
-  // 3. Assign to internal track with changelog
-  logger.log("  Assignation au canal 'internal'...");
+  // 3. Assign to track with changelog
+  logger.log(`  Assignation au canal '${track}'...`);
   const release = {
     versionCodes: [uploadResult.versionCode],
     status: "completed",
@@ -829,34 +837,71 @@ async function uploadToGooglePlay(androidConfig, aabPath, changelog = null) {
   if (changelog) {
     release.releaseNotes = [{ language: "fr-FR", text: changelog }];
   }
-  const trackBody = JSON.stringify({ track: "internal", releases: [release] });
-  await httpRequest({
+  const trackBody = JSON.stringify({ track, releases: [release] });
+  await httpsRequest({
     hostname: "androidpublisher.googleapis.com",
-    path: `/androidpublisher/v3/applications/${pkg}/edits/${edit.id}/tracks/internal`,
+    path: `/androidpublisher/v3/applications/${pkg}/edits/${edit.id}/tracks/${track}`,
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(trackBody) },
   }, trackBody);
 
   // 4. Commit edit
   logger.log("  Commit de l'edit...");
-  await httpRequest({
+  await httpsRequest({
     hostname: "androidpublisher.googleapis.com",
     path: `/androidpublisher/v3/applications/${pkg}/edits/${edit.id}:commit`,
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
   }, "{}");
 
-  logger.success("  Android uploadé sur Google Play (canal internal)");
+  logger.success(`  Android uploadé sur Google Play (canal ${track})`);
 }
 
 // --- iOS: archive + export + upload ---
 
+function buildXcodebuildArgs(iosConfig) {
+  const project = detectIOSProjectType(iosConfig);
+  if (!project) {
+    logger.error("Impossible de détecter le type de projet iOS (pas de .xcworkspace ni .xcodeproj)");
+  }
+  return project.type === "spm"
+    ? `-project "${project.path}"`
+    : `-workspace "${project.path}"`;
+}
+
+function buildExportOptionsPlist(iosConfig, withUpload = false) {
+  let plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>app-store-connect</string>
+    <key>teamID</key>
+    <string>${iosConfig.teamId}</string>
+    <key>signingStyle</key>
+    <string>automatic</string>`;
+
+  if (withUpload) {
+    plist += `
+    <key>destination</key>
+    <string>upload</string>`;
+  }
+
+  plist += `
+    <key>uploadSymbols</key>
+    <true/>
+</dict>
+</plist>`;
+  return plist;
+}
+
 function archiveIOS(iosConfig, version) {
   logger.blue(">>> [iOS] Archive...");
   const archivePath = `build/App-${version}.xcarchive`;
+  const projectArg = buildXcodebuildArgs(iosConfig);
   exec([
     "xcodebuild archive",
-    `-workspace "${iosConfig.workspace}"`,
+    projectArg,
     `-scheme "${iosConfig.scheme}"`,
     `-archivePath "${archivePath}"`,
     `-destination "generic/platform=iOS"`,
@@ -870,27 +915,10 @@ function archiveIOS(iosConfig, version) {
 function exportAndUploadIOS(iosConfig, archivePath, version) {
   logger.blue(">>> [iOS] Export & Upload sur App Store Connect...");
   const exportPath = `build/export-${version}`;
-
-  // ExportOptions.plist with destination=upload (uploads directly during export)
-  const exportOptions = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>method</key>
-    <string>app-store-connect</string>
-    <key>teamID</key>
-    <string>${iosConfig.teamId}</string>
-    <key>signingStyle</key>
-    <string>automatic</string>
-    <key>destination</key>
-    <string>upload</string>
-    <key>uploadSymbols</key>
-    <true/>
-</dict>
-</plist>`;
   const exportOptionsPath = "build/ExportOptions.plist";
+
   fs.mkdirSync("build", { recursive: true });
-  fs.writeFileSync(exportOptionsPath, exportOptions);
+  fs.writeFileSync(exportOptionsPath, buildExportOptionsPlist(iosConfig, true));
 
   // Copy API key for authentication
   const privateKeysDir = path.join(process.env.HOME, "private_keys");
@@ -918,25 +946,10 @@ function buildIOSOnly(iosConfig, version) {
   logger.blue(">>> [iOS] Build sans upload...");
   const archivePath = archiveIOS(iosConfig, version);
   const exportPath = `build/export-${version}`;
-
-  // Export IPA locally (without destination=upload)
-  const exportOptions = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>method</key>
-    <string>app-store-connect</string>
-    <key>teamID</key>
-    <string>${iosConfig.teamId}</string>
-    <key>signingStyle</key>
-    <string>automatic</string>
-    <key>uploadSymbols</key>
-    <true/>
-</dict>
-</plist>`;
   const exportOptionsPath = "build/ExportOptions.plist";
+
   fs.mkdirSync("build", { recursive: true });
-  fs.writeFileSync(exportOptionsPath, exportOptions);
+  fs.writeFileSync(exportOptionsPath, buildExportOptionsPlist(iosConfig, false));
 
   exec([
     "xcodebuild -exportArchive",
@@ -965,12 +978,11 @@ function getCurrentVersion() {
 
 async function handleTagWorkflow(version, initialCommit) {
   const currentCommit = execOutput("git rev-parse HEAD");
-  const configChanged = execOutput("git status --porcelain src/config.json").length > 0;
+  const hasChanges = execOutput("git status --porcelain src/config.json CHANGELOG.md").length > 0;
 
-  // If config.json has uncommitted changes, propose to commit
-  if (configChanged) {
+  if (hasChanges) {
     const { doCommit } = await prompt([{
-      message: `src/config.json a été modifié (v${version}). Créer un commit de version ?`,
+      message: `Fichiers modifiés (v${version}). Créer un commit de version ?`,
       name: "doCommit",
       type: "confirm",
       default: true,
@@ -1000,6 +1012,25 @@ async function handleTagWorkflow(version, initialCommit) {
       logger.success(`  Tag v${version} créé`);
     } catch (e) {
       logger.warning(`Tag v${version} existe peut-être déjà`, false);
+    }
+  }
+
+  // Propose to push
+  const { doPush } = await prompt([{
+    message: `Pousser le commit et le tag sur origin ?`,
+    name: "doPush",
+    type: "confirm",
+    default: true,
+  }]);
+
+  if (doPush) {
+    try {
+      const branch = execOutput("git rev-parse --abbrev-ref HEAD");
+      exec(`git push origin ${branch}`);
+      if (doTag) exec(`git push origin v${version}`);
+      logger.success(`  Poussé sur origin`);
+    } catch (e) {
+      logger.warning(`Erreur push: ${e.message}`, false);
     }
   }
 }
@@ -1059,15 +1090,16 @@ async function handleCommit() {
 
   logger.blue(`>>> Version actuelle: ${version}`);
 
-  // Check if config.json has changes
   const configChanged = execOutput("git status --porcelain src/config.json").length > 0;
 
   if (configChanged) {
     exec("git add src/config.json");
+    if (fs.existsSync("CHANGELOG.md") && execOutput("git status --porcelain CHANGELOG.md").length > 0) {
+      exec("git add CHANGELOG.md");
+    }
     exec(`git commit -m "chore: bump version to ${version}"`);
     logger.success(`  Commit de version créé (v${version})`);
   } else {
-    // Check if last commit is already the version bump
     const lastMsg = execOutput("git log -1 --format=%s");
     if (lastMsg.includes(version)) {
       logger.log(`  Le dernier commit contient déjà la version ${version}`);
@@ -1124,7 +1156,7 @@ async function main() {
   // Load builder config
   const builderConfig = loadBuilderConfig();
 
-  // Changelog-only mode
+  // Changelog-only mode (store format)
   if (process.argv.includes("--changelog")) {
     const changelogConfig = builderConfig?.changelog || {};
     if (changelogConfig.provider === "none" || !changelogConfig.provider) {
@@ -1132,7 +1164,7 @@ async function main() {
       logger.log("  Exemple: { \"changelog\": { \"provider\": \"claude-api\", \"apiKey\": \"sk-ant-...\", \"language\": \"fr\" } }");
       return;
     }
-    const changelog = await generateChangelog(changelogConfig);
+    const changelog = await generateChangelogWithAI(changelogConfig, "store");
     if (changelog) {
       console.log("\n" + changelog);
       logger.blue(`\n--- ${changelog.length}/500 caractères ---`);
@@ -1142,10 +1174,10 @@ async function main() {
     return;
   }
 
-  // Changelog-file-only mode
+  // Changelog-file-only mode (markdown format)
   if (process.argv.includes("--changelog-file")) {
     const changelogConfig = builderConfig?.changelog || {};
-    const configManager = new ConfigManager();
+    const configManager = new ConfigManager("./src/config.json");
     const config = configManager.readConfig();
     await writeChangelogFile(config.version, changelogConfig);
     return;
@@ -1231,7 +1263,7 @@ async function main() {
   logger.log("");
   logger.blue(`>>> Version: ${new_config.version} (build ${new_config.build})`);
 
-  // Generate changelog
+  // Generate store changelog
   let changelog = null;
   const changelogConfig = builderConfig?.changelog || {};
   if (changelogConfig.provider && changelogConfig.provider !== "none") {
@@ -1305,9 +1337,8 @@ async function main() {
   }
 
   // Generate CHANGELOG.md (markdown format)
-  const changelogFileConfig = builderConfig?.changelog || {};
-  if (changelogFileConfig.provider && changelogFileConfig.provider !== "none") {
-    await writeChangelogFile(new_config.version, changelogFileConfig);
+  if (changelogConfig.provider && changelogConfig.provider !== "none") {
+    await writeChangelogFile(new_config.version, changelogConfig);
   }
 
   // Git: commit version + tag workflow
