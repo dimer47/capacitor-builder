@@ -131,6 +131,7 @@ Commandes :
   --android            Build pour Android
   --both               Build pour iOS et Android
   --no-upload          Build sans upload sur les stores
+  --upload-only        Uploader les builds existants (sans re-builder)
   --changelog          Générer le changelog store (texte brut, 500 chars max)
   --changelog-file     Générer/mettre à jour CHANGELOG.md (format markdown)
   --tag                Tagger le dernier commit avec la version actuelle
@@ -1180,6 +1181,53 @@ async function main() {
     const configManager = new ConfigManager("./src/config.json");
     const config = configManager.readConfig();
     await writeChangelogFile(config.version, changelogConfig);
+    return;
+  }
+
+  // Upload-only mode: upload existing builds without re-building
+  if (process.argv.includes("--upload-only")) {
+    if (!builderConfig) {
+      logger.error("capacitor-builder.config.json introuvable. Impossible d'uploader.");
+    }
+
+    const configManager = new ConfigManager("./src/config.json");
+    const config = configManager.readConfig();
+    logger.blue(`>>> Mode --upload-only: upload v${config.version} (build ${config.build})`);
+
+    // Generate store changelog for Android release notes
+    let changelog = null;
+    const changelogConfig = builderConfig?.changelog || {};
+    if (changelogConfig.provider && changelogConfig.provider !== "none") {
+      changelog = await getChangelogFromUser(changelogConfig);
+    }
+
+    const uploadIOS = process.argv.includes("--ios") || process.argv.includes("--both");
+    const uploadAndroid = process.argv.includes("--android") || process.argv.includes("--both");
+
+    if (uploadIOS && builderConfig.ios) {
+      const archivePath = `build/App-${config.version}.xcarchive`;
+      if (!fs.existsSync(archivePath)) {
+        logger.error(`Archive iOS introuvable: ${archivePath}. Lancez d'abord --no-upload.`);
+      } else {
+        exportAndUploadIOS(builderConfig.ios, archivePath, config.version);
+      }
+    }
+
+    if (uploadAndroid && builderConfig.android) {
+      const aabPath = "android/app/build/outputs/bundle/release/app-release.aab";
+      if (!fs.existsSync(aabPath)) {
+        logger.error(`AAB Android introuvable: ${aabPath}. Lancez d'abord --no-upload.`);
+      } else {
+        writeSigningProperties(builderConfig.android);
+        try {
+          await uploadToGooglePlay(builderConfig.android, aabPath, changelog);
+        } finally {
+          cleanSigningProperties();
+        }
+      }
+    }
+
+    logger.success(`\n=> Upload terminé — v${config.version} (build ${config.build})`);
     return;
   }
 
