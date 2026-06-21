@@ -18,7 +18,7 @@ class OptionsManager {
     this.program.option("--android", "Generate build for Android.");
     this.program.option("--both", "Generate build for both iOS and Android.");
     this.program.option("--no-upload", "Build without uploading to stores.");
-    this.program.option("--upload-only", "Upload existing builds without re-building.");
+    this.program.option("--publish", "Upload/publish existing builds without re-building.");
     this.program.option("--changelog", "Generate changelog only (no build).");
     this.program.option("--changelog-file", "Generate/update CHANGELOG.md (markdown format).");
     this.program.option("--tag", "Tag the current version (no build).");

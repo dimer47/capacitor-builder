@@ -131,7 +131,7 @@ Commandes :
   --android            Build pour Android
   --both               Build pour iOS et Android
   --no-upload          Build sans upload sur les stores
-  --upload-only        Uploader les builds existants (sans re-builder)
+  --publish        Uploader les builds existants (sans re-builder)
   --changelog          Générer le changelog store (texte brut, 500 chars max)
   --changelog-file     Générer/mettre à jour CHANGELOG.md (format markdown)
   --tag                Tagger le dernier commit avec la version actuelle
@@ -1185,14 +1185,14 @@ async function main() {
   }
 
   // Upload-only mode: upload existing builds without re-building
-  if (process.argv.includes("--upload-only")) {
+  if (process.argv.includes("--publish")) {
     if (!builderConfig) {
       logger.error("capacitor-builder.config.json introuvable. Impossible d'uploader.");
     }
 
     const configManager = new ConfigManager("./src/config.json");
     const config = configManager.readConfig();
-    logger.blue(`>>> Mode --upload-only: upload v${config.version} (build ${config.build})`);
+    logger.blue(`>>> Mode --publish: upload v${config.version} (build ${config.build})`);
 
     // Generate store changelog for Android release notes
     let changelog = null;
