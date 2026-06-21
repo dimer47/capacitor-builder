@@ -1294,10 +1294,10 @@ async function main() {
   // Update native versions
   logger.blue(">>> Updating native versions...");
   if (platforms.includes("android") && fs.existsSync("./android")) {
-    exec(`capacitor-set-version set:android -v ${new_config.version} -b ${new_config.build}`);
+    exec(`npx capacitor-set-version set:android -v ${new_config.version} -b ${new_config.build}`);
   }
   if (platforms.includes("ios") && fs.existsSync("./ios")) {
-    exec(`capacitor-set-version set:ios -v ${new_config.version} -b ${new_config.build}`);
+    exec(`npx capacitor-set-version set:ios -v ${new_config.version} -b ${new_config.build}`);
   }
 
   // --- Build & Upload per platform ---
