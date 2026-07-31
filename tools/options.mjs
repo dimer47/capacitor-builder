@@ -25,6 +25,8 @@ class OptionsManager {
     this.program.option("--init", "Create capacitor-builder.config.json interactively.");
     this.program.option("--check", "Validate capacitor-builder.config.json.");
     this.program.option("--commit", "Commit version bump and tag.");
+    this.program.option("--bump [type]", "Bump version only (major/minor/patch). Interactive if no type given.");
+    this.program.option("--no-build-bump", "Skip build number increment (use with --bump).");
     this.program.option("-h, --help", "Show help.");
   }
 

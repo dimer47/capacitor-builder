@@ -23,6 +23,8 @@ npm install github:dimer47/capacitor-builder
 | `--both` | Build et upload pour iOS et Android |
 | `--no-upload` | Build complet sans upload sur les stores |
 | `--changelog` | Générer le changelog IA seul (sans build) |
+| `--bump [type]` | Bump version seulement (major/minor/patch). Interactif si pas de type |
+| `--no-build-bump` | Ne pas incrémenter le build (avec `--bump`) |
 | `--tag` | Tagger la version actuelle dans git |
 | `--help` | Afficher l'aide |
 | `-f, --force` | Ignorer les vérifications git (branche, fichiers non commités) |
@@ -41,6 +43,15 @@ node ./node_modules/capacitor-builder/index.mjs --changelog
 
 # Tagger la version actuelle
 node ./node_modules/capacitor-builder/index.mjs --tag
+
+# Bump version patch (directement, sans build/commit/tag)
+node ./node_modules/capacitor-builder/index.mjs --bump patch
+
+# Bump version interactif
+node ./node_modules/capacitor-builder/index.mjs --bump
+
+# Bump version sans incrémenter le build
+node ./node_modules/capacitor-builder/index.mjs --bump minor --no-build-bump
 ```
 
 ## Scripts npm recommandés
@@ -58,6 +69,7 @@ Ajoutez ces scripts dans le `package.json` de votre projet (préfixe `cb:` pour 
     "android:cb:generate:no-upload": "node ./node_modules/capacitor-builder/index.mjs --android --no-upload",
     "cb:changelog": "node ./node_modules/capacitor-builder/index.mjs --changelog",
     "cb:tag": "node ./node_modules/capacitor-builder/index.mjs --tag",
+    "cb:bump": "node ./node_modules/capacitor-builder/index.mjs --bump",
     "cb:init": "node ./node_modules/capacitor-builder/index.mjs --init",
     "cb:help": "node ./node_modules/capacitor-builder/index.mjs --help",
     "cb:sync-version": "node ./node_modules/capacitor-builder/sync-version.mjs"

@@ -137,6 +137,8 @@ Commandes :
   --tag                Tagger le dernier commit avec la version actuelle
   --check              Vérifier la config capacitor-builder.config.json
   --commit             Committer le bump de version + tagger (si oublié après generate)
+  --bump [type]        Bump version seulement (major/minor/patch). Interactif si pas de type
+  --no-build-bump      Ne pas incrémenter le build (avec --bump)
   --help               Afficher cette aide
   -f, --force          Ignorer les vérifications git (branche, uncommitted)
   -y, --yes            Mode non-interactif : accepte tous les prompts (pour CI/CD et agents IA)
@@ -152,6 +154,8 @@ Scripts npm :
   npm run cb:changelog:file            Générer/mettre à jour CHANGELOG.md
   npm run cb:tag                       Tagger la version actuelle
   npm run cb:commit                    Committer version + tagger
+  npm run cb:bump                      Bump version (interactif)
+  npm run cb:bump -- patch             Bump patch directement
   npm run cb:init                      Créer la config (interactif)
   npm run cb:check                     Vérifier la config
   npm run cb:help                      Afficher cette aide
@@ -1114,6 +1118,99 @@ async function handleCommit() {
   await handleTagOnly();
 }
 
+// --- Bump version only ---
+
+async function handleBump(bumpArg, options) {
+  const configManager = new ConfigManager("./src/config.json");
+  const config = configManager.readConfig();
+
+  logger.blue(`>>> Version actuelle: ${config.version} (build ${config.build})`);
+
+  let versionType = null;
+  let increaseBuild = true;
+
+  // --no-build-bump flag
+  if (options.buildBump === false) {
+    increaseBuild = false;
+  }
+
+  // If bump type given as argument (--bump patch / --bump minor / --bump major)
+  if (typeof bumpArg === "string" && ["major", "minor", "patch"].includes(bumpArg)) {
+    versionType = bumpArg;
+  } else {
+    // Interactive mode
+    const answers = await prompt([
+      {
+        message: "Increase app version",
+        name: "increase_app_version",
+        type: "confirm",
+        default: true,
+      },
+      {
+        message: "Version type",
+        name: "version_type",
+        type: "list",
+        when: (a) => a.increase_app_version,
+        choices: [
+          { name: "patch (0.0.1)", value: "patch" },
+          { name: "minor (0.1.0)", value: "minor" },
+          { name: "major (1.0.0)", value: "major" },
+        ],
+      },
+      {
+        message: "Increase build",
+        name: "increase_build_version",
+        type: "confirm",
+        default: true,
+        when: () => options.buildBump !== false,
+      },
+    ]);
+
+    if (answers.increase_app_version) {
+      versionType = answers.version_type;
+    }
+    if (answers.increase_build_version === false) {
+      increaseBuild = false;
+    }
+  }
+
+  // Apply bump
+  const newConfig = { ...config };
+  if (versionType) {
+    let v = (config.version + "").split(".").map((x) => parseInt(x) || 0);
+    while (v.length < 3) v.push(0);
+    if (versionType === "major") { v[0]++; v[1] = 0; v[2] = 0; }
+    else if (versionType === "minor") { v[1]++; v[2] = 0; }
+    else if (versionType === "patch") { v[2]++; }
+    newConfig.version = v.join(".");
+  }
+  if (increaseBuild) {
+    newConfig.build += 1;
+  }
+
+  // Check if anything changed
+  if (newConfig.version === config.version && newConfig.build === config.build) {
+    logger.warning("Aucune modification de version.", false);
+    return;
+  }
+
+  // Write config
+  configManager.writeConfig(newConfig);
+  logger.success(`  src/config.json → v${newConfig.version} (build ${newConfig.build})`);
+
+  // Sync native versions
+  if (fs.existsSync("./android")) {
+    logger.blue(">>> Sync version Android...");
+    exec(`npx capacitor-set-version set:android -v ${newConfig.version} -b ${newConfig.build}`);
+  }
+  if (fs.existsSync("./ios")) {
+    logger.blue(">>> Sync version iOS...");
+    exec(`npx capacitor-set-version set:ios -v ${newConfig.version} -b ${newConfig.build}`);
+  }
+
+  logger.success(`\n=> Version bumped: ${config.version} (build ${config.build}) → ${newConfig.version} (build ${newConfig.build})`);
+}
+
 // --- Main ---
 
 async function main() {
@@ -1148,6 +1245,12 @@ async function main() {
   // Commit mode
   if (process.argv.includes("--commit")) {
     await handleCommit();
+    return;
+  }
+
+  // Bump mode
+  if (options.bump !== undefined) {
+    await handleBump(options.bump, options);
     return;
   }
 
