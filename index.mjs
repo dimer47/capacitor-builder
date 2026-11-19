@@ -3,6 +3,7 @@ import inquirer from "inquirer";
 import OptionsManager from "./tools/options.mjs";
 import Logger from "./tools/logger.mjs";
 import ConfigManager from "./tools/configs.mjs";
+import { hasAndroidPlatform, hasIOSPlatform, syncVersionAllPlatforms } from "./tools/platforms.mjs";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -27,14 +28,26 @@ async function prompt(questions) {
       const shouldAsk = typeof q.when === "function" ? q.when(result) : q.when;
       if (!shouldAsk) continue;
     }
-    if (q.type === "confirm") {
+    // En non-interactif, une valeur peut être fournie par variable d'env
+    // CB_<NAME> (ex. CB_TEAMID, CB_KEYSTOREPASSWORD) pour ne pas bloquer.
+    const envKey = `CB_${String(q.name).toUpperCase()}`;
+    const envVal = process.env[envKey];
+
+    if (envVal !== undefined && envVal !== "") {
+      result[q.name] = envVal;
+    } else if (q.type === "confirm") {
       result[q.name] = q.default !== undefined ? q.default : true;
     } else if (q.type === "list") {
       result[q.name] = q.default || (q.choices?.[0]?.value ?? q.choices?.[0]);
     } else {
       result[q.name] = q.default || "";
     }
-    logger.log(`  [--yes] ${q.message} → ${result[q.name]}`);
+
+    const shown = q.type === "password" && result[q.name] ? "••••••" : result[q.name];
+    logger.log(`  [--yes] ${q.message} → ${shown || "(vide)"}`);
+    if ((result[q.name] === "" || result[q.name] === undefined) && q.type !== "confirm") {
+      logger.warning(`  ⚠ ${q.name} vide en mode --yes (définir ${envKey} ou un default).`, false);
+    }
   }
   return result;
 }
@@ -186,7 +199,7 @@ async function handleInit() {
 
   if (fs.existsSync(configPath)) {
     logger.warning("capacitor-builder.config.json existe déjà.", false);
-    const { overwrite } = await inquirer.prompt([{
+    const { overwrite } = await prompt([{
       message: "Voulez-vous le recréer ?",
       name: "overwrite",
       type: "confirm",
@@ -199,11 +212,11 @@ async function handleInit() {
   logger.log("");
 
   // iOS
-  const { configIOS } = await inquirer.prompt([{
+  const { configIOS } = await prompt([{
     message: "Configurer iOS ?",
     name: "configIOS",
     type: "confirm",
-    default: fs.existsSync("./ios"),
+    default: hasIOSPlatform(),
   }]);
 
   let ios = null;
@@ -212,7 +225,7 @@ async function handleInit() {
     const detected = detectIOSProjectType();
     const isSPM = detected?.type === "spm";
 
-    const iosAnswers = await inquirer.prompt([
+    const iosAnswers = await prompt([
       { message: "Team ID Apple Developer:", name: "teamId", type: "input" },
       { message: "Scheme Xcode:", name: "scheme", type: "input", default: "App" },
       {
@@ -229,16 +242,16 @@ async function handleInit() {
   }
 
   // Android
-  const { configAndroid } = await inquirer.prompt([{
+  const { configAndroid } = await prompt([{
     message: "Configurer Android ?",
     name: "configAndroid",
     type: "confirm",
-    default: fs.existsSync("./android"),
+    default: hasAndroidPlatform(),
   }]);
 
   let android = null;
   if (configAndroid) {
-    const androidAnswers = await inquirer.prompt([
+    const androidAnswers = await prompt([
       { message: "Package name (ex: com.example.app):", name: "packageName", type: "input" },
       { message: "Chemin keystore (.jks):", name: "keystorePath", type: "input" },
       { message: "Mot de passe keystore:", name: "keystorePassword", type: "password" },
@@ -259,7 +272,7 @@ async function handleInit() {
   }
 
   // Changelog
-  const { configChangelog } = await inquirer.prompt([{
+  const { configChangelog } = await prompt([{
     message: "Configurer le changelog IA ?",
     name: "configChangelog",
     type: "confirm",
@@ -268,7 +281,7 @@ async function handleInit() {
 
   let changelog = null;
   if (configChangelog) {
-    const changelogAnswers = await inquirer.prompt([
+    const changelogAnswers = await prompt([
       {
         message: "Provider IA:", name: "provider", type: "list",
         choices: [
@@ -1198,15 +1211,8 @@ async function handleBump(bumpArg, options) {
   configManager.writeConfig(newConfig);
   logger.success(`  src/config.json → v${newConfig.version} (build ${newConfig.build})`);
 
-  // Sync native versions
-  if (fs.existsSync("./android")) {
-    logger.blue(">>> Sync version Android...");
-    exec(`npx capacitor-set-version set:android -v ${newConfig.version} -b ${newConfig.build}`);
-  }
-  if (fs.existsSync("./ios")) {
-    logger.blue(">>> Sync version iOS...");
-    exec(`npx capacitor-set-version set:ios -v ${newConfig.version} -b ${newConfig.build}`);
-  }
+  // Sync native versions (iOS / Android / les deux, chacune isolée)
+  syncVersionAllPlatforms(newConfig.version, newConfig.build, logger);
 
   logger.success(`\n=> Version bumped: ${config.version} (build ${config.build}) → ${newConfig.version} (build ${newConfig.build})`);
 }
@@ -1442,14 +1448,9 @@ async function main() {
     }
   }
 
-  // Update native versions
+  // Update native versions (limité aux plateformes demandées, chacune isolée)
   logger.blue(">>> Updating native versions...");
-  if (platforms.includes("android") && fs.existsSync("./android")) {
-    exec(`npx capacitor-set-version set:android -v ${new_config.version} -b ${new_config.build}`);
-  }
-  if (platforms.includes("ios") && fs.existsSync("./ios")) {
-    exec(`npx capacitor-set-version set:ios -v ${new_config.version} -b ${new_config.build}`);
-  }
+  syncVersionAllPlatforms(new_config.version, new_config.build, logger, platforms);
 
   // --- Build & Upload per platform ---
 
