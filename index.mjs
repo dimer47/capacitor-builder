@@ -151,7 +151,9 @@ Commandes :
   --check              Vérifier la config capacitor-builder.config.json
   --commit             Committer le bump de version + tagger (si oublié après generate)
   --bump [type]        Bump version seulement (major/minor/patch). Interactif si pas de type
-  --no-build-bump      Ne pas incrémenter le build (avec --bump)
+  --no-build-bump      Ne pas incrémenter le build (avec --bump, ou --ios/--android/--both)
+  --no-bump            Ne pas incrémenter version ni build (ré-upload du build actuel,
+                       sans commit ni tag) — pratique après un échec d'upload
   --help               Afficher cette aide
   -f, --force          Ignorer les vérifications git (branche, uncommitted)
   -y, --yes            Mode non-interactif : accepte tous les prompts (pour CI/CD et agents IA)
@@ -1345,6 +1347,8 @@ async function main() {
   const hasAndroid = process.argv.includes("--android");
   const hasBoth = process.argv.includes("--both");
   const noUpload = process.argv.includes("--no-upload");
+  const noBump = process.argv.includes("--no-bump");
+  const noBuildBump = process.argv.includes("--no-build-bump");
   const platforms = [];
   if (hasBoth || hasIOS) platforms.push("ios");
   if (hasBoth || hasAndroid) platforms.push("android");
@@ -1391,19 +1395,33 @@ async function main() {
   const configManager = new ConfigManager("./src/config.json");
   const config = configManager.readConfig();
 
-  const { increase_app_version, version_type, increase_build_version } = await prompt([
-    { message: "Increase app version", name: "increase_app_version", type: "confirm", default: true },
-    {
-      message: "Version type", name: "version_type", type: "list",
-      when: (a) => a.increase_app_version,
-      choices: [
-        { name: "patch (0.0.1)", value: "patch" },
-        { name: "minor (0.1.0)", value: "minor" },
-        { name: "major (1.0.0)", value: "major" },
-      ],
-    },
-    { message: "Increase build", name: "increase_build_version", type: "confirm", default: true },
-  ]);
+  // --no-bump : réutiliser la version/build actuels sans incrémenter ni demander.
+  // Utile pour ré-uploader un build qui a échoué après coup (ex. erreur de
+  // signature ou de validation) sans gaspiller un numéro de version.
+  let increase_app_version;
+  let version_type;
+  let increase_build_version;
+  if (noBump) {
+    logger.blue(">>> Mode --no-bump : version et build conservés");
+    increase_app_version = false;
+    version_type = null;
+    increase_build_version = false;
+  } else {
+    ({ increase_app_version, version_type, increase_build_version } = await prompt([
+      { message: "Increase app version", name: "increase_app_version", type: "confirm", default: true },
+      {
+        message: "Version type", name: "version_type", type: "list",
+        when: (a) => a.increase_app_version,
+        choices: [
+          { name: "patch (0.0.1)", value: "patch" },
+          { name: "minor (0.1.0)", value: "minor" },
+          { name: "major (1.0.0)", value: "major" },
+        ],
+      },
+      { message: "Increase build", name: "increase_build_version", type: "confirm", default: true, when: () => !noBuildBump },
+    ]));
+    if (noBuildBump) increase_build_version = false;
+  }
 
   const new_config = { ...config };
   if (increase_app_version) {
